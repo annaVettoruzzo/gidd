@@ -2,3 +2,4 @@ defaults:
   - defaults
 
 dataset_name: HuggingFaceFW/fineweb
+dataset_subset: sample-10BT
