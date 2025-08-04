@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=mdlm_train_4gpu_4node_lrdn
+#SBATCH --job-name=small-mdlm-fineweb-4gpu-4node-lrdn-a100-64bs
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
-#SBATCH --partition=boost_usr_prod
-#SBATCH --time=3:00:00
+#SBATCH --partition=boost_usr_prod 
+#SBATCH --time=03:00:00
 #SBATCH --account=AIFAC_L01_028
 #SBATCH --qos=normal
 #SBATCH --output=slurm_logs/%x-%j.out
@@ -33,6 +33,7 @@ DISTRIBUTED_ARGS=(
 
 # files are deleted after 40 days
 export WDIR="/leonardo_scratch/large/userexternal/avettoru/gidd_mdlm_logs"
+#export WANDB_DIR="/leonardo_work/AIFAC_L01_028/avettoru/gidd/"
 
 # to run wandb in offline mode
 export WANDB_MODE=offline
@@ -46,5 +47,5 @@ srun torchrun "${DISTRIBUTED_ARGS[@]}" \
   --master_port=$MASTER_PORT \
   gidd/train.py \
     --config-name=mdlm \
-    logging.run_name="'small-mdlm-fineweb-4gpu-4node-lrdn'" \
-    hydra.run.dir=$WDIR
+    logging.run_name="$SLURM_JOB_NAME" \
+    hydra.job.name="$SLURM_JOB_NAME"
