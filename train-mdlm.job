@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=mdlm_train_4gpu-4node
+#SBATCH --job-name=1B-mdlm-fineweb-4gpu-4node-snls-h100-8bs
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
@@ -23,6 +23,9 @@ DISTRIBUTED_ARGS=(
     --nnodes $SLURM_NNODES
 )
 
+# files are deleted after 40 days
+export WDIR="/scratch-local/avettoruzzo/gidd_mdlm_logs"
+
 # Launch training
 srun torchrun "${DISTRIBUTED_ARGS[@]}" \
   --rdzv_id=$SLURM_JOBID \
@@ -32,4 +35,5 @@ srun torchrun "${DISTRIBUTED_ARGS[@]}" \
   --master_port=$MASTER_PORT \
   gidd/train.py \
     --config-name=mdlm \
-    logging.run_name="'small-mdlm-fineweb-4gpu-4node'"
+    logging.run_name="$SLURM_JOB_NAME" \
+    hydra.job.name="$SLURM_JOB_NAME"
