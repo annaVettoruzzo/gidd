@@ -135,7 +135,6 @@ class MaskedDiffusion(NoiseSchedule):
         move_chance = 1 - torch.exp(-sigma)
         is_masked = torch.rand(input_ids.shape, dtype=torch.float, device=input_ids.device, generator=generator) < move_chance.unsqueeze(-1)
         #is_masked = torch.rand_like(input_ids.float()) < move_chance.unsqueeze(-1)
-        print(is_masked)
         z_t = torch.where(is_masked, self.mask_id, input_ids)
         return z_t
 

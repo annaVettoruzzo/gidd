@@ -1,8 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=small-mdlm-fineweb-4gpu-4node-lrdn-a100-64bs
+#SBATCH --job-name=1B-mdlm-fineweb-4gpu-4node-lrdn-a100-8bs
 #SBATCH --nodes=4
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=4
+#SBATCH --cpus-per-task=32
 #SBATCH --partition=boost_usr_prod
 #SBATCH --time=03:00:00
 #SBATCH --account=AIFAC_L01_028
@@ -25,6 +26,15 @@ source $VENV_PATH/bin/activate
 # Distributed training
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=39591
+
+# Print in job file
+echo "Job submission date: $SLURM_JOB_SUBMIT"
+
+NODE_COUNT=$(scontrol show hostnames $SLURM_JOB_NODELIST | wc -l)
+echo "Number of nodes allocated: $NODE_COUNT"
+
+echo "MASTER_ADDR: $MASTER_ADDR"
+echo "Running on node: $(hostname)"
 
 DISTRIBUTED_ARGS=(
     --nproc-per-node $SLURM_GPUS_PER_NODE 
