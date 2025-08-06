@@ -130,10 +130,12 @@ class MaskedDiffusion(NoiseSchedule):
         probs[..., self.mask_id] = 1 - alpha_t.unsqueeze(-1)
         return probs
 
-    def sample_zt(self, input_ids, t):
+    def sample_zt(self, input_ids, t, generator=None):
         _, sigma = self.get_sigmas(t)
         move_chance = 1 - torch.exp(-sigma)
-        is_masked = torch.rand_like(input_ids.float()) < move_chance.unsqueeze(-1)
+        is_masked = torch.rand(input_ids.shape, dtype=torch.float, device=input_ids.device, generator=generator) < move_chance.unsqueeze(-1)
+        #is_masked = torch.rand_like(input_ids.float()) < move_chance.unsqueeze(-1)
+        print(is_masked)
         z_t = torch.where(is_masked, self.mask_id, input_ids)
         return z_t
 
