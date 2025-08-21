@@ -1,25 +1,22 @@
 #!/bin/bash
-#SBATCH --job-name=small-gidd-fineweb-4gpu-4node-lrdn-a100-64bs
-#SBATCH --nodes=4
+#SBATCH --job-name=1B-gidd-fineweb-1gpu-1node-snls-a100-8bs-flashattn
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=4
-#SBATCH --partition=boost_usr_prod 
-#SBATCH --time=03:00:00
-#SBATCH --account=AIFAC_L01_028
-#SBATCH --qos=normal
+#SBATCH --gpus-per-node=1
+#SBATCH --partition=gpu_a100
+#SBATCH --time=3:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-
 # Usage:
-#     sbatch pretrain_gidd_leonardo.job
+#     sbatch train_gidd_snls.job
 #
 
 set -e  # Exit immediately on error
 
 # Activate environment
 module purge
-module load python/3.11.7 nccl/2.22.3-1--gcc--12.2.0-cuda-12.2-spack0.22
+module load 2024 Python/3.12.3-GCCcore-13.3.0 NCCL/2.22.3-GCCcore-13.3.0-CUDA-12.6.0
 export VENV_PATH=".venv"
 source $VENV_PATH/bin/activate
 
@@ -32,10 +29,8 @@ DISTRIBUTED_ARGS=(
     --nnodes $SLURM_NNODES
 )
 
-export WDIR="/leonardo_scratch/large/userexternal/avettoru/gidd_gidd_logs"
-
-# Offline wandb logging
-export WANDB_MODE=offline
+# files are deleted after 40 days
+export WDIR="/scratch-shared/avettoruzzo/gidd_mdlm_logs"
 
 # Launch training
 srun torchrun "${DISTRIBUTED_ARGS[@]}" \
