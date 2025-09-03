@@ -157,10 +157,13 @@ def main(config):
         wandb.config.update({"pwd": pwd})
         print(f"Working directory: {pwd}")
 
-    if isinstance(model, DIT):
-        non_emb_params = sum(p.numel() for p in model.blocks.parameters())
+    base_model = model.module if isinstance(model, FSDP) else model
+    if isinstance(base_model, DIT):
+        non_emb_params = sum(p.numel() for p in base_model.blocks.parameters())
+        print(f'DIT non emb param: {non_emb_params}')
     else:  # Llama
-        non_emb_params = sum(p.numel() for p in model.model.layers.parameters())
+        non_emb_params = sum(p.numel() for p in base_model.model.layers.parameters())
+        print(f'Llama non emb param: {non_emb_params}')
 
     flops_per_batch = calculate_flops_per_batch(config, model, len(tokenizer), non_emb_params, method="hoffmann")
 
