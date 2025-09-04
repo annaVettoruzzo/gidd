@@ -101,13 +101,16 @@ def main(config):
 
     dtype = parse_dtype(config.training.dtype)
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using {device=} and {dtype=}")
+    if is_main_process: 
+        print(f"Using {device=} and {dtype=}")
 
     if config.training.resume is None:
         tokenizer = get_tokenizer(config)
         model = get_model(config, tokenizer, dtype=dtype)
 
         if config.training.fsdp:
+            if is_main_process:
+                print("Train with FSDP")
             auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1_000_000)
 
             model = FSDP(model,
@@ -160,10 +163,12 @@ def main(config):
     base_model = model.module if isinstance(model, FSDP) else model
     if isinstance(base_model, DIT):
         non_emb_params = sum(p.numel() for p in base_model.blocks.parameters())
-        print(f'DIT non emb param: {non_emb_params}')
+        if is_main_process:
+            print(f'DIT non emb param: {non_emb_params}')
     else:  # Llama
         non_emb_params = sum(p.numel() for p in base_model.model.layers.parameters())
-        print(f'Llama non emb param: {non_emb_params}')
+        if is_main_process:
+            print(f'Llama non emb param: {non_emb_params}')
 
     flops_per_batch = calculate_flops_per_batch(config, model, len(tokenizer), non_emb_params, method="hoffmann")
 
@@ -246,10 +251,11 @@ def main(config):
 
             (loss * config.loss.loss_scale).backward()
 
-            if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0:
-                norm = FSDP.clip_grad_norm_(model, config.optimizer.grad_clip_norm)
+            clip_norm = config.optimizer.grad_clip_norm if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0 else 1e6
+            if config.training.fsdp:
+                norm = FSDP.clip_grad_norm_(model, clip_norm)
             else:
-                norm = FSDP.clip_grad_norm_(model, 1e6)
+                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm)
 
             optimizer.step()
             optimizer.zero_grad()
