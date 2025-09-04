@@ -1,10 +1,10 @@
 #!/bin/bash
-#SBATCH --job-name=1B-gidd-fineweb-1gpu-1node-snls-a100-8bs-flashattn
+#SBATCH --job-name=1B-gidd-fineweb-1gpu-1node-snls-h100-8bs-oldcode
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=1
-#SBATCH --partition=gpu_a100
-#SBATCH --time=3:00:00
+#SBATCH --partition=gpu_h100
+#SBATCH --time=1:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
@@ -30,7 +30,7 @@ DISTRIBUTED_ARGS=(
 )
 
 # files are deleted after 40 days
-export WDIR="/scratch-shared/avettoruzzo/gidd_mdlm_logs"
+export WDIR="/scratch-shared/avettoruzzo/gidd_logs"
 
 # Launch training
 srun torchrun "${DISTRIBUTED_ARGS[@]}" \
@@ -41,5 +41,6 @@ srun torchrun "${DISTRIBUTED_ARGS[@]}" \
     --master_port=$MASTER_PORT \
     gidd/train.py \
         --config-name=gidd \
+        logging.wandb_project=gidd-gidd \
         logging.run_name="$SLURM_JOB_NAME" \
         hydra.job.name="$SLURM_JOB_NAME"
