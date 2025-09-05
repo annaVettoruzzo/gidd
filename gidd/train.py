@@ -13,6 +13,9 @@ import tqdm
 import wandb
 from omegaconf import OmegaConf, open_dict
 from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+import functools
 
 from gidd.models.dit import DIT
 from gidd.checkpoints import (
@@ -98,12 +101,24 @@ def main(config):
 
     dtype = parse_dtype(config.training.dtype)
     device = torch.device(f"cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using {device=} and {dtype=}")
+    if is_main_process:
+        print(f"Using {device=} and {dtype=}")
 
     if config.training.resume is None:
         tokenizer = get_tokenizer(config)
-
         model = get_model(config, tokenizer, dtype=dtype)
+
+        if config.training.fsdp:
+            if is_main_process:
+                print("Train with FSDP")
+            auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1_000_000)
+
+            model = FSDP(model,
+                        auto_wrap_policy=auto_wrap_policy,
+                        sharding_strategy=torch.distributed.fsdp.ShardingStrategy.FULL_SHARD,
+                        device_id=torch.cuda.current_device()
+                        )
+
         noise_schedule = get_noise_schedule(config, tokenizer)
         loss_fn = get_loss(config, tokenizer, noise_schedule)
         trainer = get_trainer(config, model, tokenizer, noise_schedule, loss_fn, dtype)
@@ -145,24 +160,34 @@ def main(config):
         wandb.config.update({"pwd": pwd})
         print(f"Working directory: {pwd}")
 
-    if isinstance(model, DIT):
-        non_emb_params = sum(p.numel() for p in model.blocks.parameters())
+    base_model = model.module if isinstance(model, FSDP) else model
+    if isinstance(base_model, DIT):
+        non_emb_params = sum(p.numel() for p in base_model.blocks.parameters())
+        if is_main_process:
+            print(f'DIT non emb param: {non_emb_params}')
     else:  # Llama
-        non_emb_params = sum(p.numel() for p in model.model.layers.parameters())
+        non_emb_params = sum(p.numel() for p in base_model.model.layers.parameters())
+        if is_main_process:
+            print(f'Llama non emb param: {non_emb_params}')
 
     flops_per_batch = calculate_flops_per_batch(config, model, len(tokenizer), non_emb_params, method="hoffmann")
 
     trainable_params = sum(p.numel() for p in trainer.parameters() if p.requires_grad)
 
     if config.training.compile_model:
-        opt_trainer = torch.compile(trainer)
+        if isinstance(trainer.model, FSDP): #avoid compiling when using FSDP
+            opt_trainer = trainer
+        else:
+            opt_trainer = torch.compile(trainer)
     else:
         opt_trainer = trainer
 
-    if is_distributed:
-        ddp_trainer = DDP(opt_trainer, device_ids=[device.index])
+    if is_distributed and config.training.fsdp:
+        dist_trainer = opt_trainer
+    elif is_distributed and not config.training.fsdp:
+        dist_trainer = DDP(opt_trainer, device_ids=[device.index])
     else:
-        ddp_trainer = opt_trainer
+        dist_trainer = opt_trainer
 
     if is_main_process:
         non_emb_params_str = f"{non_emb_params / 1e6:.1f}M" if non_emb_params < 500 * 1e6 else f"{non_emb_params / 1e9:.1f}B"
@@ -222,14 +247,15 @@ def main(config):
                 param_group["lr"] = curr_lr
 
             batch = {k: v.to(device, non_blocking=True) for k, v in batch.items()}
-            loss, metrics = ddp_trainer(batch)
+            loss, metrics = dist_trainer(batch)
 
             (loss * config.loss.loss_scale).backward()
 
-            if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0:
-                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.optimizer.grad_clip_norm)
+            clip_norm = config.optimizer.grad_clip_norm if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0 else 1e6
+            if config.training.fsdp:
+                norm = FSDP.clip_grad_norm_(model, clip_norm)
             else:
-                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1e6)
+                norm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip_norm)
 
             optimizer.step()
             optimizer.zero_grad()
@@ -286,7 +312,7 @@ def main(config):
                         bs = test_batch["input_ids"].size(0)
 
                         test_batch = {k: v.to(device, non_blocking=True) for k, v in test_batch.items()}
-                        loss, metrics = ddp_trainer(test_batch)
+                        loss, metrics = dist_trainer(test_batch)
 
                         for k, v in metrics.items():
                             eval_metrics[k] = eval_metrics.get(k, 0) + (v.item() if isinstance(v, torch.Tensor) else v) * bs
@@ -316,11 +342,8 @@ def main(config):
             # increment step before saving so that resuming from the checkpoint will start at the next step
             state.step += 1
             if ((step + 1) % config.logging.save_freq) == 0:
-                dist.barrier()
                 output_path = Path(config.logging.save_dir, "latest")
-                if is_main_process:
-                    save_checkpoint(output_path, trainer, optimizer, state)
-                dist.barrier()
+                save_checkpoint(output_path, trainer, optimizer, state)
                 output_path.mkdir(exist_ok=True, parents=True)
                 save_rng_state(output_path, global_rank)
                 dist.barrier()
