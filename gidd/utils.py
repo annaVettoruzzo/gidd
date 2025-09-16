@@ -5,7 +5,6 @@ import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy, MixedPrecision
 
-from gidd.models.dit import DIT
 
 def parse_dtype(dtype):
     if dtype == "fp16":
@@ -95,25 +94,17 @@ def calculate_flops_per_batch(config, model, vocab_size, non_emb_params=None, me
     return flops_per_batch
 
 
-def get_nbr_model_params(model, trainer, config):
+def get_nbr_trainable_params(trainer):
 
-    def get_global_param_count(module, requires_grad: bool = True):
-        local_count = sum(
-            p.numel() for p in module.parameters() if (p.requires_grad or not requires_grad)
-        )
-        if config.training.fsdp:
-            base_model = module.module if isinstance(module, FSDP) else module
-            device = next(base_model.parameters()).device
-            t = torch.tensor(local_count, device=device, dtype=torch.long)
-            dist.all_reduce(t, op=dist.ReduceOp.SUM)
-            return int(t.item())
-        else:
-            return local_count
+    def get_global_param_count(module):
+        local_count = sum(p.numel() for p in module.parameters() if p.requires_grad )
+        device = next(module.parameters()).device
+        t = torch.tensor(local_count, device=device, dtype=torch.long)
+        dist.all_reduce(t, op=dist.ReduceOp.SUM)
+        return int(t.item())
 
-    if isinstance(model, FSDP):
-        non_emb_params = get_global_param_count(model, requires_grad=False)
-        trainable_params = get_global_param_count(trainer, requires_grad=True)
+    if isinstance(trainer.model, FSDP):
+        trainable_params = get_global_param_count(trainer)
     else:
-        non_emb_params = sum(p.numel() for p in model.parameters())
         trainable_params = sum(p.numel() for p in trainer.parameters() if p.requires_grad)
-    return non_emb_params, trainable_params
+    return trainable_params

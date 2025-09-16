@@ -36,7 +36,7 @@ from gidd.utils import (
     parse_dtype,
     calculate_flops_per_batch,
     get_fsdp_precision,
-    get_nbr_model_params
+    get_nbr_trainable_params
 )
 
 
@@ -110,6 +110,11 @@ def main(config):
         tokenizer = get_tokenizer(config)
         model = get_model(config, tokenizer, dtype=dtype)
 
+        if isinstance(model, DIT):
+            non_emb_params = sum(p.numel() for p in model.blocks.parameters())
+        else:  # Llama
+            non_emb_params = sum(p.numel() for p in model.model.layers.parameters())
+
         if config.training.fsdp:
             if is_main_process:
                 print("Wrapping model with FSDP")
@@ -169,7 +174,8 @@ def main(config):
         wandb.config.update({"pwd": pwd})
         print(f"Working directory: {pwd}")
 
-    non_emb_params, trainable_params = get_nbr_model_params(model, trainer, config)
+    trainable_params = get_nbr_trainable_params(trainer)
+
     flops_per_batch = calculate_flops_per_batch(config, model, len(tokenizer), non_emb_params, method="hoffmann")
 
     if config.training.compile_model:
