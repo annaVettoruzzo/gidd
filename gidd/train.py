@@ -202,8 +202,8 @@ def main(config):
         train_grad_accum_steps = 1
 
     if is_main_process:
-        non_emb_params_str = f"{non_emb_params / 1e6:.2f}M" if non_emb_params < 500 * 1e6 else f"{non_emb_params / 1e9:.2f}B"
-        trainable_params_str = f"{trainable_params / 1e6:.2f}M" if trainable_params < 500 * 1e6 else f"{trainable_params / 1e9:.2f}B"
+        non_emb_params_str = f"{non_emb_params / 1e6:.3f}M" if non_emb_params < 500 * 1e6 else f"{non_emb_params / 1e9:.3f}B"
+        trainable_params_str = f"{trainable_params / 1e6:.3f}M" if trainable_params < 500 * 1e6 else f"{trainable_params / 1e9:.3f}B"
         print(f"*** Starting training ***")
         print(f"* World size: {world_size}")
         print(f"* FLOPS per batch: {flops_per_batch:.3g}")
