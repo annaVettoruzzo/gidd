@@ -12,39 +12,82 @@
 
 set -e  # Exit immediately on error
 
-# Activate environment
+#---- Activate environment ----
 module purge
 module load python/3.11.7 nccl/2.22.3-1--gcc--12.2.0-cuda-12.2-spack0.22
 export VENV_PATH=".venv"
 source $VENV_PATH/bin/activate
 
-# Distributed training
+
+#---- Config ----
+MODEL=gidd                                  # Options: gidd, ar
+MODEL_SIZE=1B                               # Options: 1B, small, base, tiny
+DATASET=fineweb                             # Options: fineweb
+MBS=8                                      # Micro batch size. Opions: 4, 8, 16, 32
+SL=2048                                     # Sequence length. Options: 512, 1024, 4096
+GBS=                                        # Global batch size. Based on this, #GPUs, MBS, # grad acc steps are automatically set
+TRAIN_STEPS=2000                              # Training steps. Default=1000
+FSDP=False                                   # FSDP. Options: True, False
+FSDP_SHARDING=SHARD_GRAD_OP                 # Sharding strategy (if FSDP). Option: FULL_SHARD, SHARD_GRAD_OP
+
+if [ "$MODEL_SIZE" == "small" ]; then
+    N_PARAMS="0.17"
+elif [ "$MODEL_SIZE" == "base" ]; then
+    N_PARAMS="0.42"
+elif [ "$MODEL_SIZE" == "1B" ]; then
+    N_PARAMS="1.50"
+else
+    echo "Unknown MODEL_SIZE: $MODEL_SIZE"
+    exit 1
+fi
+
+SL_NAME=""
+GBS_NAME=""
+FSDP_NAME="" # Initialize FSDP_NAME to an empty string
+if [ -n "$SL" ]; then
+    SL_NAME="-${SL}sl"
+fi
+if [ -n "$GBS" ]; then
+    GBS_NAME="-${GBS}gbs"
+fi
+if [ "$FSDP" == "True" ]; then
+    if [ "$FSDP_SHARDING" == "SHARD_GRAD_OP" ]; then
+        FSDP_NAME="-fsdp2"
+    elif [ "$FSDP_SHARDING" == "FULL_SHARD" ]; then
+        FSDP_NAME="-fsdp3"
+    fi
+fi
+
+export WDIR="/leonardo_scratch/large/userexternal/avettoru/gidd_logs"
+
+#---- Distributed training ----
 export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
 export MASTER_PORT=39591
-
-# Print in job file
-echo "Job submission date: $(date)"
-
 NODE_COUNT=$(scontrol show hostnames $SLURM_JOB_NODELIST | wc -l)
-echo "Number of nodes allocated: $NODE_COUNT"
-
 TOTAL_GPUS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
-echo "Number of GPUs allocated: $TOTAL_GPUS"
-
-echo "MASTER_ADDR: $MASTER_ADDR"
-echo "Running on node: $(hostname)"
-
 DISTRIBUTED_ARGS=(
     --nproc-per-node $SLURM_GPUS_PER_NODE 
     --nnodes $SLURM_NNODES
 )
 
-export WDIR="/leonardo_scratch/large/userexternal/avettoru/gidd_logs"
-
 # Offline wandb logging
 export WANDB_MODE=offline
 
-# Launch training
+#export NCCL_DEBUG=INFO # for debugging
+
+
+#---- Print in job file ----
+echo "Job submission date: $(date)"
+echo "Number of nodes allocated: $NODE_COUNT"
+echo "Number of GPUs allocated: $TOTAL_GPUS"
+echo "MASTER_ADDR: $MASTER_ADDR"
+echo "Running on node: $(hostname)"
+
+JOB_NAME="LRDN-${SLURM_JOB_ID}-${N_PARAMS}B-${TOTAL_GPUS}gpu-${MBS}mbs-${DATASET}-${MODEL}${SL_NAME}${GAS_NAME}${FSDP_NAME}"
+echo "Run saved with job name $JOB_NAME"
+
+
+#---- Launch training ----
 srun torchrun "${DISTRIBUTED_ARGS[@]}" \
     --rdzv_id=$SLURM_JOBID \
     --rdzv_backend=c10d \
@@ -52,10 +95,18 @@ srun torchrun "${DISTRIBUTED_ARGS[@]}" \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
     gidd/train.py \
-        --config-name=gidd \
+        --config-name=$MODEL \
         data.dataset_name=/leonardo_work/AIFAC_L01_028/ggala000/raw/ \
         data.tokenizer_name=/leonardo_work/AIFAC_L01_028/ggala000/tokenizers/models--gpt2/snapshots/607a30d783dfa663caf39e06633721c8d4cfcd7e \
         data.cache_dir=/leonardo_scratch/large/userexternal/avettoru/.cache \
+        model=$MODEL_SIZE \
+        model.max_seq_len=$SL \
+        training.global_train_batch_size=$GBS \
+        training.train_batch_size=$MBS \
+        training.eval_batch_size=$MBS \
+        training.num_train_steps=$TRAIN_STEPS \
+        training.fsdp=$FSDP \
+        training.fsdp_sharding_strategy=$FSDP_SHARDING \
         logging.wandb_project=gidd-gidd \
-        logging.run_name="$SLURM_JOB_NAME" \
-        hydra.job.name="$SLURM_JOB_NAME"
+        logging.run_name="$JOB_NAME" \
+        hydra.job.name="$JOB_NAME"

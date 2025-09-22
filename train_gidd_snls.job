@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH --job-name=1B-gidd-fineweb-16gpu-4node-snls-h100-8bs-fsdp2
-#SBATCH --nodes=8
+#SBATCH --job-name=1B-gidd-fineweb-4gpu-1node-snls-a100-16bs-fsdp2
+#SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=64      # 72 for a100, 64 for h100
 #SBATCH --gpus-per-node=4
-#SBATCH --partition=gpu_h100
-#SBATCH --time=1:30:00
+#SBATCH --partition=gpu_a100
+#SBATCH --time=1:00:00
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
@@ -15,50 +15,92 @@
 
 set -e  # Exit immediately on error
 
-# Activate environment
+
+#---- Activate environment ----
 module purge
 module load 2024 Python/3.12.3-GCCcore-13.3.0 NCCL/2.22.3-GCCcore-13.3.0-CUDA-12.6.0
 export VENV_PATH=".venv"
 source $VENV_PATH/bin/activate
 
-# Distributed training
-export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
-export MASTER_PORT=39591
+#---- Config ----
+MODEL=gidd                                  # Options: gidd, ar
+MODEL_SIZE=1B                               # Options: 1B, small, base, tiny
+DATASET=fineweb                             # Options: fineweb
+MBS=8                                      # Micro batch size. Opions: 4, 8, 16, 32
+SL=512                                     # Sequence length. Options: 512, 1024, 4096
+GBS=                                        # Global batch size. Based on this, #GPUs, MBS, # grad acc steps are automatically set
+TRAIN_STEPS=1000                              # Training steps. Default=1000
+FSDP=False                                   # FSDP. Options: True, False
+FSDP_SHARDING=SHARD_GRAD_OP                 # Sharding strategy (if FSDP). Option: FULL_SHARD, SHARD_GRAD_OP
 
-# Print in job file
-echo "Job submission date: $(date)"
+if [ "$MODEL_SIZE" == "small" ]; then
+    N_PARAMS="0.17"
+elif [ "$MODEL_SIZE" == "base" ]; then
+    N_PARAMS="0.42"
+elif [ "$MODEL_SIZE" == "1B" ]; then
+    N_PARAMS="1.50"
+else
+    echo "Unknown MODEL_SIZE: $MODEL_SIZE"
+    exit 1
+fi
 
-NODE_COUNT=$(scontrol show hostnames $SLURM_JOB_NODELIST | wc -l)
-echo "Number of nodes allocated: $NODE_COUNT"
-
-TOTAL_GPUS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
-echo "Number of GPUs allocated: $TOTAL_GPUS"
-
-echo "MASTER_ADDR: $MASTER_ADDR"
-echo "Running on node: $(hostname)"
-
-DISTRIBUTED_ARGS=(
-    --nproc-per-node $SLURM_GPUS_PER_NODE 
-    --nnodes $SLURM_NNODES
-)
+SL_NAME=""
+GBS_NAME=""
+FSDP_NAME="" # Initialize FSDP_NAME to an empty string
+if [ -n "$SL" ]; then
+    SL_NAME="-${SL}sl"
+fi
+if [ -n "$GBS" ]; then
+    GBS_NAME="-${GBS}gbs"
+fi
+if [ "$FSDP" == "True" ]; then
+    if [ "$FSDP_SHARDING" == "SHARD_GRAD_OP" ]; then
+        FSDP_NAME="-fsdp2"
+    elif [ "$FSDP_SHARDING" == "FULL_SHARD" ]; then
+        FSDP_NAME="-fsdp3"
+    fi
+fi
 
 # Set NCCL environment variables
-# Set the correct NCCL_SOCKET_IFNAME based on the partition
 if [ "$SLURM_JOB_PARTITION" == "gpu_h100" ]; then
-    echo "Using H100 partition, setting NCCL_SOCKET_IFNAME to eno2np0"
+    echo "Using H100 partition on Snellius, setting NCCL_SOCKET_IFNAME to eno2np0"
     export NCCL_SOCKET_IFNAME="eno2np0"
-else
-    echo "Using A100 or other partition, setting NCCL_SOCKET_IFNAME to eno1np0"
+    SERVER="SNLSh"
+
+elif [ "$SLURM_JOB_PARTITION" == "gpu_a100" ]; then
+    echo "Using A100 partition on Snellius, setting NCCL_SOCKET_IFNAME to eno1np0"
     export NCCL_SOCKET_IFNAME="eno1np0"
+    SERVER="SNLSa"
 fi
 export NCCL_P2P_DISABLE=1
-
-#export NCCL_DEBUG=INFO # for debugging
 
 # files are deleted after 40 days
 export WDIR="/scratch-shared/avettoruzzo/gidd_logs"
 
-# Launch training
+
+#---- Distributed training ----
+export MASTER_ADDR=$(scontrol show hostnames $SLURM_JOB_NODELIST | head -n 1)
+export MASTER_PORT=39591
+NODE_COUNT=$(scontrol show hostnames $SLURM_JOB_NODELIST | wc -l)
+TOTAL_GPUS=$((SLURM_NNODES * SLURM_GPUS_PER_NODE))
+DISTRIBUTED_ARGS=(
+    --nproc-per-node $SLURM_GPUS_PER_NODE 
+    --nnodes $SLURM_NNODES
+)
+#export NCCL_DEBUG=INFO # for debugging
+
+
+#---- Print in job file ----
+echo "Job submission date: $(date)"
+echo "Number of nodes allocated: $NODE_COUNT"
+echo "Number of GPUs allocated: $TOTAL_GPUS"
+echo "MASTER_ADDR: $MASTER_ADDR"
+echo "Running on node: $(hostname)"
+
+JOB_NAME="${SERVER}-${SLURM_JOB_ID}-${N_PARAMS}B-${TOTAL_GPUS}gpu-${MBS}mbs-${DATASET}-${MODEL}${SL_NAME}${GAS_NAME}${FSDP_NAME}"
+echo "Run saved with job name $JOB_NAME"
+
+#---- Launch training ----
 srun torchrun "${DISTRIBUTED_ARGS[@]}" \
     --rdzv_id=$SLURM_JOBID \
     --rdzv_backend=c10d \
@@ -66,10 +108,18 @@ srun torchrun "${DISTRIBUTED_ARGS[@]}" \
     --master_addr=$MASTER_ADDR \
     --master_port=$MASTER_PORT \
     gidd/train.py \
-        --config-name=gidd \
+        --config-name=$MODEL \
         data.dataset_name=/projects/0/prjs1502/datasets/FineWeb/raw \
         data.tokenizer_name=gpt2 \
         data.cache_dir=/scratch-shared/avettoruzzo/datasets \
+        model=$MODEL_SIZE \
+        model.max_seq_len=$SL \
+        training.global_train_batch_size=$GBS \
+        training.train_batch_size=$MBS \
+        training.eval_batch_size=$MBS \
+        training.num_train_steps=$TRAIN_STEPS \
+        training.fsdp=$FSDP \
+        training.fsdp_sharding_strategy=$FSDP_SHARDING \
         logging.wandb_project=gidd-gidd \
-        logging.run_name="$SLURM_JOB_NAME" \
-        hydra.job.name="$SLURM_JOB_NAME"
+        logging.run_name="$JOB_NAME" \
+        hydra.job.name="$JOB_NAME"
