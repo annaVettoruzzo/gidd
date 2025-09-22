@@ -14,10 +14,10 @@ import wandb
 from omegaconf import OmegaConf, open_dict
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, ShardingStrategy
-from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
+from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy, transformer_auto_wrap_policy
 import functools
 
-from gidd.models.dit import DIT
+from gidd.models.dit import DIT, DDiTBlock
 from gidd.checkpoints import (
     save_checkpoint,
     load_checkpoint_for_training,
@@ -119,7 +119,8 @@ def main(config):
             if is_main_process:
                 print("Wrapping model with FSDP")
             if config.training.wrapping_strategy:
-                auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1_000_000)
+                auto_wrap_policy = functools.partial(transformer_auto_wrap_policy,transformer_layer_cls={DDiTBlock,},)
+                #auto_wrap_policy = functools.partial(size_based_auto_wrap_policy, min_num_params=1_000_000)
             else: 
                 auto_wrap_policy = None
 
@@ -271,10 +272,12 @@ def main(config):
             # update parameters after accumulating gradients
             if (step + 1) % train_grad_accum_steps == 0:
                 # gradient clipping
-                if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0:
-                    norm = FSDP.clip_grad_norm_(model, config.optimizer.grad_clip_norm)
+                norm_value = config.optimizer.grad_clip_norm if config.optimizer.grad_clip_norm and config.optimizer.grad_clip_norm > 0 else 1e6
+
+                if config.training.fsdp:
+                    norm = FSDP.clip_grad_norm_(model, norm_value)
                 else:
-                    norm = FSDP.clip_grad_norm_(model, 1e6)
+                    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1e6)
 
                 optimizer.step() # update parameters
                 optimizer.zero_grad() # clear gradients
