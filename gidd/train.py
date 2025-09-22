@@ -299,6 +299,7 @@ def main(config):
                     "train/total_tokens": state.total_tokens,
                     "train/total_flops": state.total_flops,
                     "train/tokens_per_sec": batch_tokens / step_time,
+                    "train/tokens_per_sec_per_gpu": batch_tokens / (step_time * config.training.world_size),
                     "train/flops_per_sec": batch_flops / step_time,
                     "train/samples_per_sec": total_batch_size / step_time,
                     "train/it_per_sec": 1 / step_time,
